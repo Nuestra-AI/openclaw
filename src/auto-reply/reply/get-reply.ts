@@ -1,4 +1,3 @@
-import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
   resolveAgentDir,
@@ -10,12 +9,15 @@ import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
-import { type OpenClawConfig, loadConfig, parseConfigJson5 } from "../../config/config.js";
-import { MissingEnvVarError, resolveConfigEnvVars } from "../../config/env-substitution.js";
-import { applyMergePatch } from "../../config/merge-patch.js";
+import { type OpenClawConfig, loadConfig } from "../../config/config.js";
+import {
+  loadAndMergeConfigOverlay,
+  validatePathUnderBaseDir,
+  copyBootstrapFiles,
+  applyToolOverrides,
+} from "../../config/config-overlay.js";
 import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
-import { normalizeAgentId } from "../../routing/session-key.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { MsgContext } from "../templating.js";
@@ -68,40 +70,17 @@ export async function getReplyFromConfig(
 
   // Load and merge per-stack openclaw.json overlay from config directory early,
   // before model/agent/timeout resolution so the overlay can influence all of them.
-  // The workspaceBaseDir security boundary comes from the base config (not the overlay).
+  // Snapshot workspaceBaseDir BEFORE the overlay merge so a malicious overlay cannot
+  // widen the security boundary.
+  const workspaceBaseDirFromBaseConfig = cfg.agents?.defaults?.workspaceBaseDir?.trim();
   if (opts?.configDirOverride) {
-    const configDir = path.resolve(opts.configDirOverride.trim());
-    const workspaceBaseDirForValidation = cfg.agents?.defaults?.workspaceBaseDir?.trim();
-    if (workspaceBaseDirForValidation) {
-      const base = path.resolve(workspaceBaseDirForValidation);
-      if (!configDir.startsWith(base + path.sep) && configDir !== base) {
-        throw new Error(
-          `config-dir override must be under workspaceBaseDir (${base}), got: ${configDir}`,
-        );
-      }
-    }
-    const overlayPath = path.join(configDir, "openclaw.json");
-    try {
-      const overlayRaw = await fs.readFile(overlayPath, "utf-8");
-      const parseResult = parseConfigJson5(overlayRaw);
-      if (
-        parseResult.ok &&
-        parseResult.parsed &&
-        typeof parseResult.parsed === "object" &&
-        !Array.isArray(parseResult.parsed)
-      ) {
-        const resolved = resolveConfigEnvVars(parseResult.parsed);
-        const merged = applyMergePatch(cfg, resolved, { mergeObjectArraysById: true });
-        Object.assign(cfg, merged);
-      } else if (!parseResult.ok) {
-        defaultRuntime.error?.(`Failed to parse ${overlayPath}: ${parseResult.error}`);
-      }
-    } catch (err: any) {
-      if (err instanceof MissingEnvVarError) {
-        throw new Error(`Config overlay ${overlayPath}: ${err.message}`);
-      }
-      if (err.code !== "ENOENT") throw err;
-    }
+    await loadAndMergeConfigOverlay({
+      cfg,
+      configDir: path.resolve(opts.configDirOverride.trim()),
+      workspaceBaseDir: workspaceBaseDirFromBaseConfig,
+      label: "config-dir override",
+      onParseError: (msg) => defaultRuntime.error?.(msg),
+    });
   }
 
   const targetSessionKey =
@@ -147,20 +126,12 @@ export async function getReplyFromConfig(
 
   // Apply channel/webhook overrides for workspace, config-dir, and tool policy.
   // These mirror the CLI override logic in agentCommandInternal (commands/agent.ts).
-  const workspaceBaseDir = cfg.agents?.defaults?.workspaceBaseDir?.trim();
-
   const workspaceDirRaw = opts?.workspaceOverride?.trim()
     || resolveAgentWorkspaceDir(cfg, agentId)
     || DEFAULT_AGENT_WORKSPACE_DIR;
 
-  if (opts?.workspaceOverride?.trim() && workspaceBaseDir) {
-    const resolved = path.resolve(opts.workspaceOverride.trim());
-    const base = path.resolve(workspaceBaseDir);
-    if (!resolved.startsWith(base + path.sep) && resolved !== base) {
-      throw new Error(
-        `workspace override must be under workspaceBaseDir (${base}), got: ${resolved}`,
-      );
-    }
+  if (opts?.workspaceOverride?.trim()) {
+    validatePathUnderBaseDir(opts.workspaceOverride.trim(), workspaceBaseDirFromBaseConfig, "workspace override");
   }
 
   const workspace = await ensureAgentWorkspace({
@@ -170,57 +141,22 @@ export async function getReplyFromConfig(
   const workspaceDir = workspace.dir;
 
   // Copy bootstrap .md files from configDirOverride into workspace.
-  // Note: workspaceBaseDir boundary was already validated in the early overlay block above.
   if (opts?.configDirOverride) {
-    const configDir = path.resolve(opts.configDirOverride.trim());
-
-    try {
-      await fs.access(configDir);
-    } catch {
-      throw new Error(`config-dir path does not exist: ${configDir}`);
-    }
-    const bootstrapFileNames = [
-      "AGENTS.md", "IDENTITY.md", "SOUL.md", "TOOLS.md",
-      "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md",
-    ];
-    for (const filename of bootstrapFileNames) {
-      const srcPath = path.join(configDir, filename);
-      try {
-        const content = await fs.readFile(srcPath, "utf-8");
-        await fs.writeFile(path.join(workspaceDir, filename), content, "utf-8");
-      } catch (err: any) {
-        if (err.code !== "ENOENT") throw err;
-      }
-    }
+    await copyBootstrapFiles({
+      configDir: path.resolve(opts.configDirOverride.trim()),
+      workspaceDir,
+      label: "config-dir override",
+    });
   }
 
   // Apply tool policy overrides
-  const VALID_TOOL_PROFILES = ["minimal", "coding", "messaging", "full"];
-  if (opts?.toolsProfileOverride && !VALID_TOOL_PROFILES.includes(opts.toolsProfileOverride)) {
-    throw new Error(
-      `Invalid tools-profile "${opts.toolsProfileOverride}". Use one of: ${VALID_TOOL_PROFILES.join(", ")}`,
-    );
-  }
-  if (opts?.toolsProfileOverride || opts?.toolsAllowOverride || opts?.toolsDenyOverride) {
-    const agentEntry = cfg.agents?.list?.find(
-      (a: any) => normalizeAgentId(a.id) === agentId,
-    );
-    const toolsOverride: Record<string, unknown> = { ...(agentEntry?.tools ?? {}) };
-    if (opts.toolsProfileOverride) toolsOverride.profile = opts.toolsProfileOverride;
-    if (opts.toolsAllowOverride) toolsOverride.allow = opts.toolsAllowOverride;
-    if (opts.toolsDenyOverride) toolsOverride.deny = opts.toolsDenyOverride;
-
-    if (agentEntry) {
-      agentEntry.tools = toolsOverride as any;
-    } else {
-      cfg.agents = cfg.agents ?? {};
-      cfg.agents.list = cfg.agents.list ?? [];
-      cfg.agents.list.push({
-        id: agentId,
-        tools: toolsOverride,
-      } as any);
-    }
-  }
+  applyToolOverrides({
+    cfg,
+    agentId,
+    toolsProfileOverride: opts?.toolsProfileOverride,
+    toolsAllowOverride: opts?.toolsAllowOverride,
+    toolsDenyOverride: opts?.toolsDenyOverride,
+  });
 
   const agentDir = resolveAgentDir(cfg, agentId);
   const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideSeconds: opts?.timeoutOverrideSeconds });
