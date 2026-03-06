@@ -114,8 +114,8 @@ The path is configurable via `channels.magicform.webhookPath`.
   "user_id": "user-456",
   "user_name": "Jane Doe",
 
-  "config_dir": "/data/configs/acme-corp",
-  "workspace": "/data/workspaces/acme-corp",
+  "config_dir": "configs/acme-corp",
+  "workspace": "workspaces/acme-corp",
 
   "tools_profile": "coding",
   "tools_allow": ["read", "write", "exec"],
@@ -132,8 +132,8 @@ The path is configurable via `channels.magicform.webhookPath`.
 | `conversation_id` | string | Yes | Conversation identifier |
 | `user_id` | string | No | User identifier |
 | `user_name` | string | No | Display name (falls back to `user_id` or "unknown") |
-| `config_dir` | string | No | Per-stack config directory path (see [Config Overlay](/cli/agent#config-overlay---config-dir)) |
-| `workspace` | string | No | Per-stack workspace directory path |
+| `config_dir` | string | No | Per-stack config directory (relative to `workspaceRoot` when set; see [Config Overlay](/cli/agent#config-overlay---config-dir)) |
+| `workspace` | string | No | Per-stack workspace directory (relative to `workspaceRoot` when set) |
 | `tools_profile` | string | No | Tool profile override (see [Tool Profiles](/cli/agent#tool-profiles)) |
 | `tools_allow` | string[] | No | Tool allowlist (supports glob patterns and groups) |
 | `tools_deny` | string[] | No | Tool denylist (supports glob patterns and groups) |
@@ -220,15 +220,15 @@ Content-Type: application/json
 
 ## Security
 
-### workspaceBaseDir Boundary
+### workspaceRoot Boundary
 
-When `agents.defaults.workspaceBaseDir` is set, both `config_dir` and `workspace` must resolve under it. This prevents directory traversal attacks via webhook payloads.
+When `agents.defaults.workspaceRoot` is set, both `config_dir` and `workspace` must be **relative** paths (e.g. `configs/acme-corp`, `workspaces/acme-corp`). They are resolved under `workspaceRoot`. Absolute paths, `..` traversal, and bare `.` are rejected. This prevents directory traversal attacks via webhook payloads.
 
 ```json5
 {
   "agents": {
     "defaults": {
-      "workspaceBaseDir": "/data"
+      "workspaceRoot": "/data"
     }
   }
 }
@@ -307,7 +307,7 @@ Per-account config supports the same fields as the base channel config (except `
 
 ## Per-Stack Setup
 
-Each MagicForm stack/account needs a **config directory** and a **workspace directory** under `workspaceBaseDir`.
+Each MagicForm stack/account needs a **config directory** and a **workspace directory** under `workspaceRoot`.
 
 ### Directory Layout
 
@@ -362,7 +362,7 @@ export ACME_ANTHROPIC_KEY="sk-ant-..."
 ### 1. Set up base config
 
 ```bash
-openclaw config set agents.defaults.workspaceBaseDir /data
+openclaw config set agents.defaults.workspaceRoot /data
 openclaw config set channels.magicform.enabled true
 openclaw config set channels.magicform.backend_url "https://api.magicform.ai"
 openclaw config set channels.magicform.api_token "$MAGICFORM_API_TOKEN"
@@ -387,8 +387,8 @@ export ACME_ANTHROPIC_KEY="sk-ant-..."
 openclaw agent \
   --to magicform:acme-corp:conv1:user1 \
   --message "Hello from MagicForm" \
-  --config-dir /data/configs/acme-corp \
-  --workspace /data/workspaces/acme-corp
+  --config-dir configs/acme-corp \
+  --workspace workspaces/acme-corp
 ```
 
 See [CLI reference](/cli/agent) for all available flags.
@@ -404,8 +404,8 @@ curl -X POST http://localhost:18789/webhook/magicform \
     "stack_id": "acme-corp",
     "conversation_id": "conv1",
     "user_id": "user1",
-    "config_dir": "/data/configs/acme-corp",
-    "workspace": "/data/workspaces/acme-corp"
+    "config_dir": "configs/acme-corp",
+    "workspace": "workspaces/acme-corp"
   }'
 ```
 

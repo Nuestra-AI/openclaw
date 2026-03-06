@@ -71,8 +71,8 @@ openclaw agent --agent ops --message "Quick test" --local
 openclaw agent \
   --to magicform:acme-corp:conv1:user1 \
   --message "Hello" \
-  --config-dir /data/configs/acme-corp \
-  --workspace /data/workspaces/acme-corp
+  --config-dir configs/acme-corp \
+  --workspace workspaces/acme-corp
 
 # Restrict tools for a specific run
 openclaw agent --agent ops --message "Audit" \
@@ -85,7 +85,7 @@ When `--config-dir` is provided, the agent command loads an `openclaw.json` over
 
 ### How it works
 
-1. **Security check** — validates the path is under `workspaceBaseDir` (if set in base config). The boundary is snapshotted from the base config *before* the overlay is loaded, so an overlay cannot weaken its own sandbox.
+1. **Security check** — when `workspaceRoot` is set in base config, `--config-dir` must be a **relative** path (e.g. `stacks/acme-corp`). It is resolved under `workspaceRoot`. Absolute paths, `..` traversal, and bare `.` are rejected. The boundary is snapshotted from the base config *before* the overlay is loaded, so an overlay cannot weaken its own sandbox.
 2. **Read overlay** — reads `openclaw.json` from the directory (JSON5 format; supports comments and trailing commas).
 3. **Resolve env vars** — substitutes `${VAR}` references from environment variables. Only `[A-Z_][A-Z0-9_]*` patterns are recognized. Missing vars throw an error. Escape with `$${VAR}` to output a literal.
 4. **Deep-merge** — applies RFC 7396 merge-patch over base config. Objects merge recursively (overlay wins). Arrays of objects with `id` fields merge by ID. `null` deletes a key. Scalars replace.
@@ -140,7 +140,7 @@ These files are copied from `--config-dir` to `--workspace` when present:
 
 1. Parse and validate `--message` (trim, reject if empty)
 2. Load base `openclaw.json`, resolve secrets via gateway
-3. Snapshot `workspaceBaseDir` from base config (security boundary)
+3. Snapshot `workspaceRoot` from base config (security boundary)
 4. Load and merge config overlay from `--config-dir` (if provided)
 5. Resolve agent ID, thinking level, verbose level, timeout
 6. Resolve session (load/create session entry from session store)

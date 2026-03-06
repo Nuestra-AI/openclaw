@@ -134,11 +134,12 @@ export type AgentDefaultsConfig = {
   workspace?: string;
   /**
    * Optional security boundary for CLI path overrides (--workspace, --config-dir).
-   * When set, both must resolve under this directory. Recommended for deployments
-   * where paths arrive via RPC (e.g. MagicForm channel plugin).
+   * When set, both must resolve as strict children of this directory (exact match
+   * is rejected to prevent cross-tenant access at the root). Recommended for
+   * deployments where paths arrive via RPC (e.g. MagicForm channel plugin).
    * Example: "/data"
    */
-  workspaceBaseDir?: string;
+  workspaceRoot?: string;
   /** Optional repository root for system prompt runtime line (overrides auto-detect). */
   repoRoot?: string;
   /** Skip bootstrap (BOOTSTRAP.md creation, etc.) for pre-configured deployments. */

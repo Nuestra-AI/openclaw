@@ -1,4 +1,3 @@
-import * as path from "node:path";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -12,7 +11,7 @@ import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
 import {
   loadAndMergeConfigOverlay,
-  validatePathUnderBaseDir,
+  resolvePathUnderRoot,
   copyBootstrapFiles,
   applyToolOverrides,
 } from "../../config/config-overlay.js";
@@ -70,14 +69,14 @@ export async function getReplyFromConfig(
 
   // Load and merge per-stack openclaw.json overlay from config directory early,
   // before model/agent/timeout resolution so the overlay can influence all of them.
-  // Snapshot workspaceBaseDir BEFORE the overlay merge so a malicious overlay cannot
+  // Snapshot workspaceRoot BEFORE the overlay merge so a malicious overlay cannot
   // widen the security boundary.
-  const workspaceBaseDirFromBaseConfig = cfg.agents?.defaults?.workspaceBaseDir?.trim();
+  const workspaceRootFromBaseConfig = cfg.agents?.defaults?.workspaceRoot?.trim();
   if (opts?.configDirOverride) {
     await loadAndMergeConfigOverlay({
       cfg,
-      configDir: path.resolve(opts.configDirOverride.trim()),
-      workspaceBaseDir: workspaceBaseDirFromBaseConfig,
+      configDir: opts.configDirOverride.trim(),
+      workspaceRoot: workspaceRootFromBaseConfig,
       label: "config-dir override",
       onParseError: (msg) => defaultRuntime.error?.(msg),
     });
@@ -127,12 +126,9 @@ export async function getReplyFromConfig(
   // Apply channel/webhook overrides for workspace, config-dir, and tool policy.
   // These mirror the CLI override logic in agentCommandInternal (commands/agent.ts).
   const workspaceDirRaw = opts?.workspaceOverride?.trim()
-    || resolveAgentWorkspaceDir(cfg, agentId)
-    || DEFAULT_AGENT_WORKSPACE_DIR;
-
-  if (opts?.workspaceOverride?.trim()) {
-    validatePathUnderBaseDir(opts.workspaceOverride.trim(), workspaceBaseDirFromBaseConfig, "workspace override");
-  }
+    ? resolvePathUnderRoot(opts.workspaceOverride.trim(), workspaceRootFromBaseConfig, "workspace override")
+    : resolveAgentWorkspaceDir(cfg, agentId)
+      || DEFAULT_AGENT_WORKSPACE_DIR;
 
   const workspace = await ensureAgentWorkspace({
     dir: workspaceDirRaw,
@@ -143,7 +139,7 @@ export async function getReplyFromConfig(
   // Copy bootstrap .md files from configDirOverride into workspace.
   if (opts?.configDirOverride) {
     await copyBootstrapFiles({
-      configDir: path.resolve(opts.configDirOverride.trim()),
+      configDir: resolvePathUnderRoot(opts.configDirOverride.trim(), workspaceRootFromBaseConfig, "config-dir override"),
       workspaceDir,
       label: "config-dir override",
     });

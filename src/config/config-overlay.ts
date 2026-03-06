@@ -19,8 +19,8 @@ import { normalizeAgentId } from "../routing/session-key.js";
 export interface LoadConfigOverlayOpts {
   cfg: OpenClawConfig;
   configDir: string;
-  /** Pre-merge workspaceBaseDir snapshot (from base config). */
-  workspaceBaseDir: string | undefined;
+  /** Pre-merge workspaceRoot snapshot (from base config). */
+  workspaceRoot: string | undefined;
   /** Label used in error messages (e.g. "--config-dir", "config-dir override"). */
   label?: string;
   /** Called when the overlay file cannot be parsed. */
@@ -28,23 +28,16 @@ export interface LoadConfigOverlayOpts {
 }
 
 /**
- * Validates that `configDir` falls under `workspaceBaseDir` (if set),
- * reads the `openclaw.json` overlay from `configDir`, and merges it into
+ * Resolves `configDir` under `workspaceRoot` (if set), reads the
+ * `openclaw.json` overlay from the resulting directory, and merges it into
  * `cfg` in place.  Silently skips if the overlay file does not exist.
  */
 export async function loadAndMergeConfigOverlay(opts: LoadConfigOverlayOpts): Promise<void> {
-  const { cfg, configDir, workspaceBaseDir, label = "--config-dir", onParseError } = opts;
+  const { cfg, configDir, workspaceRoot, label = "--config-dir", onParseError } = opts;
 
-  if (workspaceBaseDir) {
-    const base = path.resolve(workspaceBaseDir);
-    if (!configDir.startsWith(base + path.sep) && configDir !== base) {
-      throw new Error(
-        `${label} must be under workspaceBaseDir (${base}), got: ${configDir}`,
-      );
-    }
-  }
+  const resolvedConfigDir = resolvePathUnderRoot(configDir, workspaceRoot, label);
 
-  const overlayPath = path.join(configDir, "openclaw.json");
+  const overlayPath = path.join(resolvedConfigDir, "openclaw.json");
   try {
     const overlayRaw = await fs.readFile(overlayPath, "utf-8");
     const parseResult = parseConfigJson5(overlayRaw);
@@ -68,24 +61,56 @@ export async function loadAndMergeConfigOverlay(opts: LoadConfigOverlayOpts): Pr
   }
 }
 
-// ── Workspace-path validation ───────────────────────────────────────
+// ── Workspace-path resolution & validation ──────────────────────────
 
 /**
- * Throws if `workspacePath` does not resolve under `workspaceBaseDir`.
+ * When `workspaceRoot` is set, resolves `rawPath` as a relative child of the
+ * root and returns the absolute result.  Absolute paths and traversal
+ * (`..`) segments are rejected — callers must pass a relative subdirectory
+ * (e.g. `"stacks/acme-corp"`).
+ *
+ * When `workspaceRoot` is **not** set, falls back to `path.resolve(rawPath)`
+ * (backwards-compatible, no boundary enforcement).
  */
-export function validatePathUnderBaseDir(
-  workspacePath: string,
-  workspaceBaseDir: string | undefined,
+export function resolvePathUnderRoot(
+  rawPath: string,
+  workspaceRoot: string | undefined,
   label: string,
-): void {
-  if (!workspaceBaseDir) return;
-  const resolved = path.resolve(workspacePath);
-  const base = path.resolve(workspaceBaseDir);
-  if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+): string {
+  if (!workspaceRoot) {
+    return path.resolve(rawPath);
+  }
+
+  if (rawPath === "" || path.isAbsolute(rawPath)) {
     throw new Error(
-      `${label} must be under workspaceBaseDir (${base}), got: ${resolved}`,
+      `${label} must be a relative path when workspaceRoot is set, got: ${rawPath}`,
     );
   }
+
+  const normalized = path.normalize(rawPath);
+  const sep = path.sep;
+  if (
+    normalized === ".." ||
+    normalized.startsWith(`..${sep}`) ||
+    normalized.endsWith(`${sep}..`) ||
+    normalized.includes(`${sep}..${sep}`)
+  ) {
+    throw new Error(
+      `${label} must not traverse above workspaceRoot, got: ${rawPath}`,
+    );
+  }
+
+  const base = path.resolve(workspaceRoot);
+  const resolved = path.join(base, normalized);
+
+  // Sanity check: resolved must be a strict child (not equal to base).
+  if (!resolved.startsWith(base + path.sep)) {
+    throw new Error(
+      `${label} must be a child of workspaceRoot (${base}), got: ${resolved}`,
+    );
+  }
+
+  return resolved;
 }
 
 // ── Bootstrap file copying ──────────────────────────────────────────

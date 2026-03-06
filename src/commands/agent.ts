@@ -55,7 +55,7 @@ import { type CliDeps, createDefaultDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
 import {
   loadAndMergeConfigOverlay,
-  validatePathUnderBaseDir,
+  resolvePathUnderRoot,
   copyBootstrapFiles,
   applyToolOverrides,
 } from "../config/config-overlay.js";
@@ -365,14 +365,15 @@ async function agentCommandInternal(
 
   // Load and merge per-stack openclaw.json overlay from --config-dir early,
   // before model/agent/timeout resolution so the overlay can influence all of them.
-  // Snapshot workspaceBaseDir BEFORE the overlay merge so a malicious overlay cannot
-  // widen the security boundary.
-  const workspaceBaseDirFromBaseConfig = cfg.agents?.defaults?.workspaceBaseDir?.trim();
+  // Snapshot workspaceRoot BEFORE the overlay merge so a malicious overlay cannot
+  // widen the security boundary.  When workspaceRoot is set, --config-dir must be
+  // a relative path resolved under it; when unset, path.resolve() is used as-is.
+  const workspaceRootFromBaseConfig = cfg.agents?.defaults?.workspaceRoot?.trim();
   if (opts.configDirOverride) {
     await loadAndMergeConfigOverlay({
       cfg,
-      configDir: path.resolve(opts.configDirOverride.trim()),
-      workspaceBaseDir: workspaceBaseDirFromBaseConfig,
+      configDir: opts.configDirOverride.trim(),
+      workspaceRoot: workspaceRootFromBaseConfig,
       label: "--config-dir",
       onParseError: (msg) => log.error(msg),
     });
@@ -466,15 +467,13 @@ async function agentCommandInternal(
     agentId: sessionAgentId,
     sessionKey,
   });
-  // agents.defaults.workspaceBaseDir — optional security boundary for all CLI path
-  // overrides (--workspace, --config-dir). When set, both must resolve under this
-  // directory. Use the snapshot taken before the overlay merge to prevent bypass.
+  // agents.defaults.workspaceRoot — optional security boundary for all CLI path
+  // overrides (--workspace, --config-dir). When workspaceRoot is set, paths must
+  // be relative and are resolved under it. Use the snapshot taken before the
+  // overlay merge to prevent bypass.
   const workspaceDirRaw = opts.workspaceOverride?.trim()
-    || resolveAgentWorkspaceDir(cfg, sessionAgentId);
-
-  if (opts.workspaceOverride?.trim()) {
-    validatePathUnderBaseDir(opts.workspaceOverride.trim(), workspaceBaseDirFromBaseConfig, "--workspace");
-  }
+    ? resolvePathUnderRoot(opts.workspaceOverride.trim(), workspaceRootFromBaseConfig, "--workspace")
+    : resolveAgentWorkspaceDir(cfg, sessionAgentId);
 
   const agentDir = resolveAgentDir(cfg, sessionAgentId);
   const workspace = await ensureAgentWorkspace({
@@ -486,7 +485,7 @@ async function agentCommandInternal(
   // Copy bootstrap .md files from --config-dir into workspace (overwriting defaults).
   if (opts.configDirOverride) {
     await copyBootstrapFiles({
-      configDir: path.resolve(opts.configDirOverride.trim()),
+      configDir: resolvePathUnderRoot(opts.configDirOverride.trim(), workspaceRootFromBaseConfig, "--config-dir"),
       workspaceDir,
       label: "--config-dir",
       onNoCopied: (msg) => log.warn(msg),

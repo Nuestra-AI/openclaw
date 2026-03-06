@@ -7,7 +7,7 @@ import {
   applyToolOverrides,
   copyBootstrapFiles,
   loadAndMergeConfigOverlay,
-  validatePathUnderBaseDir,
+  resolvePathUnderRoot,
 } from "./config-overlay.js";
 
 // ── helpers ─────────────────────────────────────────────────────────
@@ -31,51 +31,60 @@ function baseCfg(overrides?: Partial<OpenClawConfig>): OpenClawConfig {
   return { ...overrides } as OpenClawConfig;
 }
 
-// ── validatePathUnderBaseDir ────────────────────────────────────────
+// ── resolvePathUnderRoot ────────────────────────────────────────────
 
-describe("validatePathUnderBaseDir", () => {
-  it("does nothing when workspaceBaseDir is undefined", () => {
-    expect(() =>
-      validatePathUnderBaseDir("/anywhere", undefined, "--workspace"),
-    ).not.toThrow();
+describe("resolvePathUnderRoot", () => {
+  it("falls back to path.resolve when workspaceRoot is undefined", () => {
+    const result = resolvePathUnderRoot("/anywhere", undefined, "--workspace");
+    expect(result).toBe(path.resolve("/anywhere"));
   });
 
-  it("allows a path equal to the base dir", () => {
+  it("resolves a relative path under the root", () => {
     const base = path.resolve("/data");
-    expect(() =>
-      validatePathUnderBaseDir(base, base, "--workspace"),
-    ).not.toThrow();
+    const result = resolvePathUnderRoot("stacks/s1", base, "--workspace");
+    expect(result).toBe(path.join(base, "stacks", "s1"));
   });
 
-  it("allows a path under the base dir", () => {
+  it("rejects an absolute path when workspaceRoot is set", () => {
     const base = path.resolve("/data");
-    const child = path.join(base, "stacks", "s1");
     expect(() =>
-      validatePathUnderBaseDir(child, base, "--workspace"),
-    ).not.toThrow();
+      resolvePathUnderRoot("/etc/passwd", base, "--workspace"),
+    ).toThrow(/must be a relative path when workspaceRoot is set/);
   });
 
-  it("rejects a path outside the base dir", () => {
+  it("rejects traversal via ..", () => {
     const base = path.resolve("/data");
     expect(() =>
-      validatePathUnderBaseDir("/etc/passwd", base, "--workspace"),
-    ).toThrow(/--workspace must be under workspaceBaseDir/);
+      resolvePathUnderRoot("../etc/passwd", base, "--workspace"),
+    ).toThrow(/must not traverse above workspaceRoot/);
   });
 
-  it("rejects a path that is a prefix but not a child", () => {
-    // /data-other starts with /data but is not under /data/
+  it("rejects traversal via nested ..", () => {
     const base = path.resolve("/data");
-    const sibling = path.resolve("/data-other");
     expect(() =>
-      validatePathUnderBaseDir(sibling, base, "--workspace"),
-    ).toThrow(/must be under workspaceBaseDir/);
+      resolvePathUnderRoot("stacks/../../etc", base, "--workspace"),
+    ).toThrow(/must not traverse above workspaceRoot/);
+  });
+
+  it("rejects bare . (resolves to root itself)", () => {
+    const base = path.resolve("/data");
+    expect(() =>
+      resolvePathUnderRoot(".", base, "--workspace"),
+    ).toThrow(/must be a child of workspaceRoot/);
+  });
+
+  it("rejects empty string (resolves to root itself)", () => {
+    const base = path.resolve("/data");
+    expect(() =>
+      resolvePathUnderRoot("", base, "--workspace"),
+    ).toThrow(/must be a relative path when workspaceRoot is set/);
   });
 
   it("includes the label in the error message", () => {
     const base = path.resolve("/data");
     expect(() =>
-      validatePathUnderBaseDir("/outside", base, "my-label"),
-    ).toThrow(/my-label must be under workspaceBaseDir/);
+      resolvePathUnderRoot("/outside", base, "my-label"),
+    ).toThrow(/my-label must be a relative path/);
   });
 });
 
@@ -95,7 +104,7 @@ describe("loadAndMergeConfigOverlay", () => {
     await loadAndMergeConfigOverlay({
       cfg,
       configDir: dir,
-      workspaceBaseDir: undefined,
+      workspaceRoot: undefined,
     });
 
     expect((cfg as any).session?.timeout).toBe(999);
@@ -108,11 +117,31 @@ describe("loadAndMergeConfigOverlay", () => {
 
     const cfg = baseCfg();
     await expect(
-      loadAndMergeConfigOverlay({ cfg, configDir: dir, workspaceBaseDir: undefined }),
+      loadAndMergeConfigOverlay({ cfg, configDir: dir, workspaceRoot: undefined }),
     ).resolves.toBeUndefined();
   });
 
-  it("throws when configDir is outside workspaceBaseDir", async () => {
+  it("resolves relative configDir under workspaceRoot", async () => {
+    const root = caseDir();
+    const subdir = path.join(root, "stacks", "acme");
+    await fs.mkdir(subdir, { recursive: true });
+    await fs.writeFile(
+      path.join(subdir, "openclaw.json"),
+      JSON.stringify({ session: { timeout: 42 } }),
+      "utf-8",
+    );
+
+    const cfg = baseCfg();
+    await loadAndMergeConfigOverlay({
+      cfg,
+      configDir: "stacks/acme",
+      workspaceRoot: root,
+    });
+
+    expect((cfg as any).session?.timeout).toBe(42);
+  });
+
+  it("rejects absolute configDir when workspaceRoot is set", async () => {
     const dir = caseDir();
     await fs.mkdir(dir, { recursive: true });
 
@@ -120,9 +149,22 @@ describe("loadAndMergeConfigOverlay", () => {
       loadAndMergeConfigOverlay({
         cfg: baseCfg(),
         configDir: "/outside",
-        workspaceBaseDir: dir,
+        workspaceRoot: dir,
       }),
-    ).rejects.toThrow(/must be under workspaceBaseDir/);
+    ).rejects.toThrow(/must be a relative path when workspaceRoot is set/);
+  });
+
+  it("rejects traversal in configDir", async () => {
+    const dir = caseDir();
+    await fs.mkdir(dir, { recursive: true });
+
+    await expect(
+      loadAndMergeConfigOverlay({
+        cfg: baseCfg(),
+        configDir: "../etc",
+        workspaceRoot: dir,
+      }),
+    ).rejects.toThrow(/must not traverse above workspaceRoot/);
   });
 
   it("calls onParseError for malformed JSON", async () => {
@@ -134,7 +176,7 @@ describe("loadAndMergeConfigOverlay", () => {
     await loadAndMergeConfigOverlay({
       cfg: baseCfg(),
       configDir: dir,
-      workspaceBaseDir: undefined,
+      workspaceRoot: undefined,
       onParseError: (msg) => errors.push(msg),
     });
 
@@ -142,15 +184,15 @@ describe("loadAndMergeConfigOverlay", () => {
     expect(errors[0]).toContain("Failed to parse");
   });
 
-  it("uses custom label in workspaceBaseDir error", async () => {
+  it("uses custom label in workspaceRoot error", async () => {
     await expect(
       loadAndMergeConfigOverlay({
         cfg: baseCfg(),
         configDir: "/outside",
-        workspaceBaseDir: "/data",
+        workspaceRoot: "/data",
         label: "config-dir override",
       }),
-    ).rejects.toThrow(/config-dir override must be under workspaceBaseDir/);
+    ).rejects.toThrow(/config-dir override must be a relative path/);
   });
 });
 
