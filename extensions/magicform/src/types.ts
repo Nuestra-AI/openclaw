@@ -45,7 +45,7 @@ export interface MagicFormWebhookPayload {
   message: string;
   stack_id: string;
   conversation_id: string;
-  user_id: string;
+  user_id?: string;
   user_name?: string;
   /** Workspace directory for agent-generated files (scoped by memory_scope). */
   workspace?: string;
@@ -64,7 +64,7 @@ export interface MagicFormWebhookPayload {
 export interface MagicFormCallbackPayload {
   stack_id: string;
   conversation_id: string;
-  user_id: string;
+  user_id?: string;
   response: string;
   status: "success" | "error";
   error?: string;

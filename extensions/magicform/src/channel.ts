@@ -1,7 +1,6 @@
 /**
  * MagicForm Channel Plugin for OpenClaw.
  *
- * Implements the ChannelPlugin interface following the synology-chat pattern.
  * Webhook inbound, HTTP callback outbound, no persistent connection.
  */
 
@@ -23,6 +22,28 @@ const MagicFormConfigSchema = buildChannelConfigSchema(z.object({}).passthrough(
 
 const activeRouteUnregisters = new Map<string, () => void>();
 
+/**
+ * Split a MagicForm target field into its parts.
+ * Accepts both `stack_id:conversation_id` and `stack_id:conversation_id:user_id`.
+ * Only the first two colons are treated as delimiters so that IDs containing
+ * colons are handled correctly.
+ */
+function splitTarget(target: string): [string, string, string | undefined] | null {
+  const first = target.indexOf(":");
+  if (first === -1) return null;
+  const second = target.indexOf(":", first + 1);
+  if (second === -1) {
+    // Two-part: stack_id:conversation_id
+    return [target.slice(0, first), target.slice(first + 1), undefined];
+  }
+  const userId = target.slice(second + 1);
+  return [
+    target.slice(0, first),
+    target.slice(first + 1, second),
+    userId || undefined,
+  ];
+}
+
 function waitUntilAbort(signal?: AbortSignal, onAbort?: () => void): Promise<void> {
   return new Promise((resolve) => {
     const complete = () => {
@@ -30,6 +51,7 @@ function waitUntilAbort(signal?: AbortSignal, onAbort?: () => void): Promise<voi
       resolve();
     };
     if (!signal) {
+      complete();
       return;
     }
     if (signal.aborted) {
@@ -158,10 +180,10 @@ export function createMagicFormPlugin() {
         looksLikeId: (id: string) => {
           const trimmed = id?.trim();
           if (!trimmed) return false;
-          // MagicForm targets are encoded as stack_id:conversation_id:user_id
+          // MagicForm targets are encoded as stack_id:conversation_id[:user_id]
           return /^magicform:/i.test(trimmed) || trimmed.includes(":");
         },
-        hint: "<stack_id>:<conversation_id>:<user_id>",
+        hint: "<stack_id>:<conversation_id>[:<user_id>]",
       },
     },
 
@@ -182,17 +204,17 @@ export function createMagicFormPlugin() {
           throw new Error("MagicForm backend_url not configured");
         }
 
-        // Parse the `to` field: stack_id:conversation_id:user_id
-        const parts = to.split(":");
-        if (parts.length < 3) {
-          throw new Error(`Invalid MagicForm target format: ${to} (expected stack_id:conversation_id:user_id)`);
+        // Parse the `to` field: stack_id:conversation_id[:user_id]
+        const parts = splitTarget(to);
+        if (!parts) {
+          throw new Error(`Invalid MagicForm target format: ${to} (expected stack_id:conversation_id[:user_id])`);
         }
         const [stackId, conversationId, userId] = parts;
 
         const ok = await sendCallback(account.backendUrl, account.callbackPath, {
           stack_id: stackId,
           conversation_id: conversationId,
-          user_id: userId,
+          ...(userId ? { user_id: userId } : {}),
           response: text,
           status: "success",
         }, account.apiToken);
@@ -270,8 +292,8 @@ export function createMagicFormPlugin() {
                   const text = payload?.text ?? payload?.body;
                   if (text) {
                     // Parse from field for callback routing
-                    const parts = msg.from.split(":");
-                    if (parts.length >= 3) {
+                    const parts = splitTarget(msg.from);
+                    if (parts) {
                       const [stackId, conversationId, userId] = parts;
                       await sendCallback(
                         account.backendUrl,
@@ -279,7 +301,7 @@ export function createMagicFormPlugin() {
                         {
                           stack_id: stackId,
                           conversation_id: conversationId,
-                          user_id: userId,
+                          ...(userId ? { user_id: userId } : {}),
                           response: text,
                           status: "success",
                         },
@@ -330,6 +352,13 @@ export function createMagicFormPlugin() {
 
       stopAccount: async (ctx: any) => {
         ctx.log?.info?.(`MagicForm account ${ctx.accountId} stopped`);
+        // Clean up any registered routes for this account
+        for (const [routeKey, unregister] of activeRouteUnregisters) {
+          if (routeKey.startsWith(`${ctx.accountId}:`)) {
+            unregister();
+            activeRouteUnregisters.delete(routeKey);
+          }
+        }
       },
     },
 

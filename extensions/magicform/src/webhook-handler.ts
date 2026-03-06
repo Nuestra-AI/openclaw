@@ -69,15 +69,15 @@ function parsePayload(body: string): MagicFormWebhookPayload | null {
   const message = typeof parsed.message === "string" ? parsed.message.trim() : "";
   const stackId = typeof parsed.stack_id === "string" ? parsed.stack_id.trim() : "";
   const conversationId = typeof parsed.conversation_id === "string" ? parsed.conversation_id.trim() : "";
-  const userId = typeof parsed.user_id === "string" ? parsed.user_id.trim() : "";
+  const rawUserId = typeof parsed.user_id === "string" ? parsed.user_id.trim() : "";
 
-  if (!message || !stackId || !conversationId || !userId) return null;
+  if (!message || !stackId || !conversationId) return null;
 
   return {
     message,
     stack_id: stackId,
     conversation_id: conversationId,
-    user_id: userId,
+    user_id: rawUserId || undefined,
     user_name: typeof parsed.user_name === "string" ? parsed.user_name.trim() : undefined,
     workspace: typeof parsed.workspace === "string" ? parsed.workspace.trim() : undefined,
     config_dir: typeof parsed.config_dir === "string" ? parsed.config_dir.trim() : undefined,
@@ -168,7 +168,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
       return;
     }
     if (!payload) {
-      respondJson(res, 400, { error: "Missing required fields (message, stack_id, conversation_id, user_id)" });
+      respondJson(res, 400, { error: "Missing required fields (message, stack_id, conversation_id)" });
       return;
     }
 
@@ -196,7 +196,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
     }
 
     const preview = cleanMessage.length > 100 ? `${cleanMessage.slice(0, 100)}...` : cleanMessage;
-    log?.info(`Message from ${payload.user_name ?? payload.user_id} (stack: ${payload.stack_id}): ${preview}`);
+    log?.info(`Message from ${payload.user_name ?? payload.user_id ?? "unknown"} (stack: ${payload.stack_id}): ${preview}`);
 
     // ACK immediately
     respondJson(res, 202, { ok: true });
@@ -205,7 +205,9 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
     // The dispatcher's deliver callback (in channel.ts) handles sending responses
     // back to MagicForm via sendCallback. This handler only needs to handle errors.
     const sessionKey = `magicform:${payload.stack_id}:${payload.conversation_id}`;
-    const toField = `${payload.stack_id}:${payload.conversation_id}:${payload.user_id}`;
+    const toField = payload.user_id
+      ? `${payload.stack_id}:${payload.conversation_id}:${payload.user_id}`
+      : `${payload.stack_id}:${payload.conversation_id}`;
 
     try {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -218,7 +220,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
           deliver({
             body: cleanMessage,
             from: toField,
-            senderName: payload.user_name ?? payload.user_id,
+            senderName: payload.user_name ?? payload.user_id ?? "unknown",
             provider: "magicform",
             chatType: "direct",
             sessionKey,
@@ -240,7 +242,7 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
       await sendCallback(account.backendUrl, account.callbackPath, {
         stack_id: payload.stack_id,
         conversation_id: payload.conversation_id,
-        user_id: payload.user_id,
+        ...(payload.user_id ? { user_id: payload.user_id } : {}),
         response: "",
         status: "error",
         error: errMsg,
