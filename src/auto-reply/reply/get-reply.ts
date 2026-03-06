@@ -177,7 +177,7 @@ export async function getReplyFromConfig(
     try {
       await fs.access(configDir);
     } catch {
-      defaultRuntime.error?.(`config-dir path does not exist: ${configDir}`);
+      throw new Error(`config-dir path does not exist: ${configDir}`);
     }
     const bootstrapFileNames = [
       "AGENTS.md", "IDENTITY.md", "SOUL.md", "TOOLS.md",
