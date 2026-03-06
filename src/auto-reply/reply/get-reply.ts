@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -9,6 +10,12 @@ import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
+import {
+  loadAndMergeConfigOverlay,
+  validatePathUnderBaseDir,
+  copyBootstrapFiles,
+  applyToolOverrides,
+} from "../../config/config-overlay.js";
 import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -60,6 +67,22 @@ export async function getReplyFromConfig(
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const cfg = configOverride ?? loadConfig();
+
+  // Load and merge per-stack openclaw.json overlay from config directory early,
+  // before model/agent/timeout resolution so the overlay can influence all of them.
+  // Snapshot workspaceBaseDir BEFORE the overlay merge so a malicious overlay cannot
+  // widen the security boundary.
+  const workspaceBaseDirFromBaseConfig = cfg.agents?.defaults?.workspaceBaseDir?.trim();
+  if (opts?.configDirOverride) {
+    await loadAndMergeConfigOverlay({
+      cfg,
+      configDir: path.resolve(opts.configDirOverride.trim()),
+      workspaceBaseDir: workspaceBaseDirFromBaseConfig,
+      label: "config-dir override",
+      onParseError: (msg) => defaultRuntime.error?.(msg),
+    });
+  }
+
   const targetSessionKey =
     ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
   const agentSessionKey = targetSessionKey || ctx.SessionKey;
@@ -101,12 +124,40 @@ export async function getReplyFromConfig(
     }
   }
 
-  const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
+  // Apply channel/webhook overrides for workspace, config-dir, and tool policy.
+  // These mirror the CLI override logic in agentCommandInternal (commands/agent.ts).
+  const workspaceDirRaw = opts?.workspaceOverride?.trim()
+    || resolveAgentWorkspaceDir(cfg, agentId)
+    || DEFAULT_AGENT_WORKSPACE_DIR;
+
+  if (opts?.workspaceOverride?.trim()) {
+    validatePathUnderBaseDir(opts.workspaceOverride.trim(), workspaceBaseDirFromBaseConfig, "workspace override");
+  }
+
   const workspace = await ensureAgentWorkspace({
     dir: workspaceDirRaw,
     ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
   });
   const workspaceDir = workspace.dir;
+
+  // Copy bootstrap .md files from configDirOverride into workspace.
+  if (opts?.configDirOverride) {
+    await copyBootstrapFiles({
+      configDir: path.resolve(opts.configDirOverride.trim()),
+      workspaceDir,
+      label: "config-dir override",
+    });
+  }
+
+  // Apply tool policy overrides
+  applyToolOverrides({
+    cfg,
+    agentId,
+    toolsProfileOverride: opts?.toolsProfileOverride,
+    toolsAllowOverride: opts?.toolsAllowOverride,
+    toolsDenyOverride: opts?.toolsDenyOverride,
+  });
+
   const agentDir = resolveAgentDir(cfg, agentId);
   const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideSeconds: opts?.timeoutOverrideSeconds });
   const configuredTypingSeconds =

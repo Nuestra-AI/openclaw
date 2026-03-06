@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { getAcpSessionManager } from "../acp/control-plane/manager.js";
 import { resolveAcpAgentPolicyError, resolveAcpDispatchPolicyError } from "../acp/policy.js";
 import { toAcpRuntimeError } from "../acp/runtime/errors.js";
@@ -52,6 +53,12 @@ import { resolveCommandSecretRefsViaGateway } from "../cli/command-secret-gatewa
 import { getAgentRuntimeCommandSecretTargetIds } from "../cli/command-secret-targets.js";
 import { type CliDeps, createDefaultDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
+import {
+  loadAndMergeConfigOverlay,
+  validatePathUnderBaseDir,
+  copyBootstrapFiles,
+  applyToolOverrides,
+} from "../config/config-overlay.js";
 import {
   mergeSessionEntry,
   parseSessionThreadInfo,
@@ -355,6 +362,22 @@ async function agentCommandInternal(
   for (const entry of diagnostics) {
     runtime.log(`[secrets] ${entry}`);
   }
+
+  // Load and merge per-stack openclaw.json overlay from --config-dir early,
+  // before model/agent/timeout resolution so the overlay can influence all of them.
+  // Snapshot workspaceBaseDir BEFORE the overlay merge so a malicious overlay cannot
+  // widen the security boundary.
+  const workspaceBaseDirFromBaseConfig = cfg.agents?.defaults?.workspaceBaseDir?.trim();
+  if (opts.configDirOverride) {
+    await loadAndMergeConfigOverlay({
+      cfg,
+      configDir: path.resolve(opts.configDirOverride.trim()),
+      workspaceBaseDir: workspaceBaseDirFromBaseConfig,
+      label: "--config-dir",
+      onParseError: (msg) => log.error(msg),
+    });
+  }
+
   const agentIdOverrideRaw = opts.agentId?.trim();
   const agentIdOverride = agentIdOverrideRaw ? normalizeAgentId(agentIdOverrideRaw) : undefined;
   if (agentIdOverride) {
@@ -443,13 +466,41 @@ async function agentCommandInternal(
     agentId: sessionAgentId,
     sessionKey,
   });
-  const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, sessionAgentId);
+  // agents.defaults.workspaceBaseDir — optional security boundary for all CLI path
+  // overrides (--workspace, --config-dir). When set, both must resolve under this
+  // directory. Use the snapshot taken before the overlay merge to prevent bypass.
+  const workspaceDirRaw = opts.workspaceOverride?.trim()
+    || resolveAgentWorkspaceDir(cfg, sessionAgentId);
+
+  if (opts.workspaceOverride?.trim()) {
+    validatePathUnderBaseDir(opts.workspaceOverride.trim(), workspaceBaseDirFromBaseConfig, "--workspace");
+  }
+
   const agentDir = resolveAgentDir(cfg, sessionAgentId);
   const workspace = await ensureAgentWorkspace({
     dir: workspaceDirRaw,
     ensureBootstrapFiles: !agentCfg?.skipBootstrap,
   });
   const workspaceDir = workspace.dir;
+
+  // Copy bootstrap .md files from --config-dir into workspace (overwriting defaults).
+  if (opts.configDirOverride) {
+    await copyBootstrapFiles({
+      configDir: path.resolve(opts.configDirOverride.trim()),
+      workspaceDir,
+      label: "--config-dir",
+      onNoCopied: (msg) => log.warn(msg),
+    });
+  }
+
+  // Apply --tools-* overrides to config
+  applyToolOverrides({
+    cfg,
+    agentId: sessionAgentId,
+    toolsProfileOverride: opts.toolsProfileOverride,
+    toolsAllowOverride: opts.toolsAllowOverride,
+    toolsDenyOverride: opts.toolsDenyOverride,
+  });
   let sessionEntry = resolvedSessionEntry;
   const runId = opts.runId?.trim() || sessionId;
   const acpManager = getAcpSessionManager();

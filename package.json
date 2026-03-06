@@ -128,6 +128,10 @@
       "types": "./dist/plugin-sdk/lobster.d.ts",
       "default": "./dist/plugin-sdk/lobster.js"
     },
+    "./plugin-sdk/magicform": {
+      "types": "./dist/plugin-sdk/magicform.d.ts",
+      "default": "./dist/plugin-sdk/magicform.js"
+    },
     "./plugin-sdk/matrix": {
       "types": "./dist/plugin-sdk/matrix.d.ts",
       "default": "./dist/plugin-sdk/matrix.js"
