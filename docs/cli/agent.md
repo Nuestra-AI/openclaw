@@ -24,8 +24,8 @@ Related:
 | `-t, --to <number>` | No* | — | Recipient number in E.164 used to derive the session key |
 | `--session-id <id>` | No* | — | Use an explicit session id |
 | `--agent <id>` | No | — | Agent id (overrides routing bindings) |
-| `--config-dir <dir>` | No | — | Directory containing `openclaw.json` overlay + bootstrap `.md` files |
-| `--workspace <dir>` | No | — | Override agent workspace directory (agent-generated files) |
+| `--config-dir <dir>` | No | — | Directory containing `openclaw.json` overlay + bootstrap `.md` files (relative to `workspaceRoot` when set) |
+| `--workspace <dir>` | No | — | Override agent workspace directory (relative to `workspaceRoot` when set) |
 | `--tools-profile <profile>` | No | — | Tool profile: `minimal`, `coding`, `messaging`, `full` |
 | `--tools-allow <tools>` | No | — | Comma-separated tool allowlist (applied after profile) |
 | `--tools-deny <tools>` | No | — | Comma-separated tool denylist |
@@ -85,7 +85,7 @@ When `--config-dir` is provided, the agent command loads an `openclaw.json` over
 
 ### How it works
 
-1. **Security check** — when `workspaceRoot` is set in base config, `--config-dir` must be a **relative** path (e.g. `stacks/acme-corp`). It is resolved under `workspaceRoot`. Absolute paths, `..` traversal, and bare `.` are rejected. The boundary is snapshotted from the base config *before* the overlay is loaded, so an overlay cannot weaken its own sandbox.
+1. **Security check** — when `workspaceRoot` is set in base config, both `--config-dir` and `--workspace` must be **relative** paths (e.g. `stacks/acme-corp`). They are resolved under `workspaceRoot`. Absolute paths, `..` traversal, and bare `.` are rejected. The boundary is snapshotted from the base config *before* the overlay is loaded, so an overlay cannot weaken its own sandbox.
 2. **Read overlay** — reads `openclaw.json` from the directory (JSON5 format; supports comments and trailing commas).
 3. **Resolve env vars** — substitutes `${VAR}` references from environment variables. Only `[A-Z_][A-Z0-9_]*` patterns are recognized. Missing vars throw an error. Escape with `$${VAR}` to output a literal.
 4. **Deep-merge** — applies RFC 7396 merge-patch over base config. Objects merge recursively (overlay wins). Arrays of objects with `id` fields merge by ID. `null` deletes a key. Scalars replace.

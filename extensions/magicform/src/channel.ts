@@ -24,7 +24,7 @@ const activeRouteUnregisters = new Map<string, () => void>();
 
 /**
  * Split a MagicForm target field into its parts.
- * Accepts both `stack_id:conversation_id` and `stack_id:conversation_id:user_id`.
+ * Accepts both `stackId:conversationId` and `stackId:conversationId:userId`.
  * Only the first two colons are treated as delimiters so that IDs containing
  * colons are handled correctly.
  */
@@ -33,7 +33,7 @@ function splitTarget(target: string): [string, string, string | undefined] | nul
   if (first === -1) return null;
   const second = target.indexOf(":", first + 1);
   if (second === -1) {
-    // Two-part: stack_id:conversation_id
+    // Two-part: stackId:conversationId
     return [target.slice(0, first), target.slice(first + 1), undefined];
   }
   const userId = target.slice(second + 1);
@@ -153,17 +153,17 @@ export function createMagicFormPlugin() {
         const warnings: string[] = [];
         if (!account.apiToken) {
           warnings.push(
-            "- MagicForm: api_token is not configured. The webhook will reject all requests.",
+            "- MagicForm: apiToken is not configured. The webhook will reject all requests.",
           );
         }
         if (!account.backendUrl) {
           warnings.push(
-            "- MagicForm: backend_url is not configured. The bot cannot send callback responses.",
+            "- MagicForm: backendUrl is not configured. The bot cannot send callback responses.",
           );
         }
         if (account.dmPolicy === "open" && account.allowFrom.length === 0) {
           warnings.push(
-            '- MagicForm: dmPolicy="open" with empty allow_from allows any stack to message the bot.',
+            '- MagicForm: dmPolicy="open" with empty allowFrom allows any stack to message the bot.',
           );
         }
         return warnings;
@@ -180,10 +180,10 @@ export function createMagicFormPlugin() {
         looksLikeId: (id: string) => {
           const trimmed = id?.trim();
           if (!trimmed) return false;
-          // MagicForm targets are encoded as stack_id:conversation_id[:user_id]
+          // MagicForm targets are encoded as stackId:conversationId[:userId]
           return /^magicform:/i.test(trimmed) || trimmed.includes(":");
         },
-        hint: "<stack_id>:<conversation_id>[:<user_id>]",
+        hint: "<stackId>:<conversationId>[:<userId>]",
       },
     },
 
@@ -201,22 +201,30 @@ export function createMagicFormPlugin() {
         const account: ResolvedMagicFormAccount = resolveAccount(cfg ?? {}, accountId);
 
         if (!account.backendUrl) {
-          throw new Error("MagicForm backend_url not configured");
+          throw new Error("MagicForm backendUrl not configured");
         }
 
-        // Parse the `to` field: stack_id:conversation_id[:user_id]
+        // Parse the `to` field: stackId:conversationId[:userId]
         const parts = splitTarget(to);
         if (!parts) {
-          throw new Error(`Invalid MagicForm target format: ${to} (expected stack_id:conversation_id[:user_id])`);
+          throw new Error(`Invalid MagicForm target format: ${to} (expected stackId:conversationId[:userId])`);
         }
-        const [stackId, conversationId, userId] = parts;
+        const [stackId, conversationId] = parts;
 
-        const ok = await sendCallback(account.backendUrl, account.callbackPath, {
-          stack_id: stackId,
-          conversation_id: conversationId,
-          ...(userId ? { user_id: userId } : {}),
-          response: text,
+        const ok = await sendCallback(account.callbackUrl, {
+          stackId,
+          conversationId,
+          taskId: `mf-${Date.now()}`,
+          type: "final",
           status: "success",
+          response: text,
+          error: null,
+          runtime: "openclaw",
+          durationMs: null,
+          tokenUsage: null,
+          toolCalls: null,
+          progress: null,
+          escalation: null,
         }, account.apiToken);
 
         if (!ok) {
@@ -238,7 +246,7 @@ export function createMagicFormPlugin() {
 
         if (!account.apiToken || !account.backendUrl) {
           log?.warn?.(
-            `MagicForm account ${accountId} not fully configured (missing api_token or backend_url)`,
+            `MagicForm account ${accountId} not fully configured (missing apiToken or backendUrl)`,
           );
           return waitUntilAbort(ctx.abortSignal);
         }
@@ -274,6 +282,12 @@ export function createMagicFormPlugin() {
               CommandAuthorized: true,
             });
 
+            // Resolve the effective callback URL for the response.
+            const effectiveCallbackUrl = msg.callbackUrl || account.callbackUrl;
+
+            // Track timing for durationMs.
+            const startTime = Date.now();
+
             // Dispatch via the SDK's buffered block dispatcher.
             // Pass per-request overrides from the webhook payload through replyOptions
             // so they reach getReplyFromConfig → workspace/config-dir/tool resolution.
@@ -283,9 +297,8 @@ export function createMagicFormPlugin() {
               replyOptions: {
                 workspaceOverride: msg.workspaceOverride,
                 configDirOverride: msg.configDirOverride,
-                toolsProfileOverride: msg.toolsProfileOverride,
                 toolsAllowOverride: msg.toolsAllowOverride,
-                toolsDenyOverride: msg.toolsDenyOverride,
+                skillFilter: msg.skillFilter,
               },
               dispatcherOptions: {
                 deliver: async (payload: { text?: string; body?: string }) => {
@@ -294,16 +307,24 @@ export function createMagicFormPlugin() {
                     // Parse from field for callback routing
                     const parts = splitTarget(msg.from);
                     if (parts) {
-                      const [stackId, conversationId, userId] = parts;
+                      const [stackId, conversationId] = parts;
+                      const durationMs = Date.now() - startTime;
                       await sendCallback(
-                        account.backendUrl,
-                        account.callbackPath,
+                        effectiveCallbackUrl,
                         {
-                          stack_id: stackId,
-                          conversation_id: conversationId,
-                          ...(userId ? { user_id: userId } : {}),
-                          response: text,
+                          stackId,
+                          conversationId,
+                          taskId: msg.sessionKey,
+                          type: "final",
                           status: "success",
+                          response: text,
+                          error: null,
+                          runtime: "openclaw",
+                          durationMs,
+                          tokenUsage: null,
+                          toolCalls: null,
+                          progress: null,
+                          escalation: null,
                         },
                         account.apiToken,
                       );

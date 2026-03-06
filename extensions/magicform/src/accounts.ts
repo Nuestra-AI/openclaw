@@ -10,7 +10,7 @@ function getChannelConfig(cfg: any): MagicFormChannelConfig | undefined {
   return cfg?.channels?.magicform;
 }
 
-/** Parse allow_from from string or array to string[]. */
+/** Parse allowFrom from string or array to string[]. */
 function parseAllowFrom(raw: string | string[] | undefined): string[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.filter(Boolean);
@@ -30,7 +30,7 @@ export function listAccountIds(cfg: any): string[] {
 
   const ids = new Set<string>();
 
-  const hasBaseToken = channelCfg.api_token || process.env.MAGICFORM_API_TOKEN;
+  const hasBaseToken = channelCfg.apiToken || process.env.MAGICFORM_API_TOKEN;
   if (hasBaseToken) {
     ids.add("default");
   }
@@ -58,16 +58,21 @@ export function resolveAccount(cfg: any, accountId?: string | null): ResolvedMag
   const envBackendUrl = process.env.MAGICFORM_BACKEND_URL ?? "";
   const envRateLimit = process.env.MAGICFORM_RATE_LIMIT;
 
+  const backendUrl = accountOverride.backendUrl ?? channelCfg.backendUrl ?? envBackendUrl;
+  const callbackPath = accountOverride.callbackPath ?? channelCfg.callbackPath ?? "/claw-agent/callback";
+  const callbackUrl = accountOverride.callbackUrl ?? channelCfg.callbackUrl ?? "";
+
   return {
     accountId: id,
     enabled: accountOverride.enabled ?? channelCfg.enabled ?? true,
-    backendUrl: accountOverride.backend_url ?? channelCfg.backend_url ?? envBackendUrl,
-    apiToken: accountOverride.api_token ?? channelCfg.api_token ?? envApiToken,
-    callbackPath: accountOverride.callback_path ?? channelCfg.callback_path ?? "/claw-agent/callback",
+    backendUrl,
+    apiToken: accountOverride.apiToken ?? channelCfg.apiToken ?? envApiToken,
+    callbackPath,
+    callbackUrl: callbackUrl || `${backendUrl.replace(/\/$/, "")}${callbackPath}`,
     webhookPath: accountOverride.webhookPath ?? channelCfg.webhookPath ?? "/webhook/magicform",
     dmPolicy: accountOverride.dmPolicy ?? channelCfg.dmPolicy ?? "open",
     allowFrom: parseAllowFrom(
-      accountOverride.allow_from ?? channelCfg.allow_from,
+      accountOverride.allowFrom ?? channelCfg.allowFrom,
     ),
     rateLimitPerMinute:
       accountOverride.rateLimitPerMinute ??

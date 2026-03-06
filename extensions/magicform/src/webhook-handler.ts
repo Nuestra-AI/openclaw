@@ -67,28 +67,26 @@ function parsePayload(body: string): MagicFormWebhookPayload | null {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 
   const message = typeof parsed.message === "string" ? parsed.message.trim() : "";
-  const stackId = typeof parsed.stack_id === "string" ? parsed.stack_id.trim() : "";
-  const conversationId = typeof parsed.conversation_id === "string" ? parsed.conversation_id.trim() : "";
-  const rawUserId = typeof parsed.user_id === "string" ? parsed.user_id.trim() : "";
+  const stackId = typeof parsed.stackId === "string" ? parsed.stackId.trim() : "";
+  const conversationId = typeof parsed.conversationId === "string" ? parsed.conversationId.trim() : "";
+  const rawUserId = typeof parsed.userId === "string" ? parsed.userId.trim() : "";
 
   if (!message || !stackId || !conversationId) return null;
 
   return {
     message,
-    stack_id: stackId,
-    conversation_id: conversationId,
-    user_id: rawUserId || undefined,
-    user_name: typeof parsed.user_name === "string" ? parsed.user_name.trim() : undefined,
+    stackId,
+    conversationId,
+    userId: rawUserId || undefined,
     workspace: typeof parsed.workspace === "string" ? parsed.workspace.trim() : undefined,
-    config_dir: typeof parsed.config_dir === "string" ? parsed.config_dir.trim() : undefined,
-    tools_profile: typeof parsed.tools_profile === "string" ? parsed.tools_profile.trim() : undefined,
-    tools_allow: Array.isArray(parsed.tools_allow)
-      ? parsed.tools_allow.filter((s: unknown): s is string => typeof s === "string")
+    configDir: typeof parsed.configDir === "string" ? parsed.configDir.trim() : undefined,
+    callbackUrl: typeof parsed.callbackUrl === "string" ? parsed.callbackUrl.trim() : undefined,
+    allowedTools: Array.isArray(parsed.allowedTools)
+      ? parsed.allowedTools.filter((s: unknown): s is string => typeof s === "string")
       : undefined,
-    tools_deny: Array.isArray(parsed.tools_deny)
-      ? parsed.tools_deny.filter((s: unknown): s is string => typeof s === "string")
+    allowedSkills: Array.isArray(parsed.allowedSkills)
+      ? parsed.allowedSkills.filter((s: unknown): s is string => typeof s === "string")
       : undefined,
-    metadata: typeof parsed.metadata === "object" && parsed.metadata ? parsed.metadata : undefined,
   };
 }
 
@@ -110,9 +108,10 @@ export interface WebhookHandlerDeps {
     /** Per-request overrides from webhook payload. */
     workspaceOverride?: string;
     configDirOverride?: string;
-    toolsProfileOverride?: string;
     toolsAllowOverride?: string[];
-    toolsDenyOverride?: string[];
+    skillFilter?: string[];
+    /** Per-request callback URL (overrides account default). */
+    callbackUrl?: string;
   }) => Promise<string | null>;
   log?: {
     info: (...args: unknown[]) => void;
@@ -127,8 +126,8 @@ export interface WebhookHandlerDeps {
  * This handler:
  * 1. Parses JSON payload
  * 2. Validates Bearer token
- * 3. Checks stack_id against allow_from
- * 4. Rate limits by stack_id:conversation_id
+ * 3. Checks stackId against allowFrom
+ * 4. Rate limits by stackId:conversationId
  * 5. ACKs immediately (202)
  * 6. Delivers to agent asynchronously
  * 7. Sends response back to MagicForm callback
@@ -168,20 +167,20 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
       return;
     }
     if (!payload) {
-      respondJson(res, 400, { error: "Missing required fields (message, stack_id, conversation_id)" });
+      respondJson(res, 400, { error: "Missing required fields (message, stackId, conversationId)" });
       return;
     }
 
-    // Check stack_id against allow_from
-    const auth = authorizeStackId(payload.stack_id, account.allowFrom);
+    // Check stackId against allowFrom
+    const auth = authorizeStackId(payload.stackId, account.allowFrom);
     if (!auth.allowed) {
-      log?.warn(`Stack ${payload.stack_id} not in allow_from`);
+      log?.warn(`Stack ${payload.stackId} not in allowFrom`);
       respondJson(res, 403, { error: "Stack not authorized" });
       return;
     }
 
     // Rate limit
-    const rateLimitKey = `${payload.stack_id}:${payload.conversation_id}`;
+    const rateLimitKey = `${payload.stackId}:${payload.conversationId}`;
     if (!rateLimiter.check(rateLimitKey)) {
       log?.warn(`Rate limit exceeded for ${rateLimitKey}`);
       respondJson(res, 429, { error: "Rate limit exceeded" });
@@ -196,18 +195,21 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
     }
 
     const preview = cleanMessage.length > 100 ? `${cleanMessage.slice(0, 100)}...` : cleanMessage;
-    log?.info(`Message from ${payload.user_name ?? payload.user_id ?? "unknown"} (stack: ${payload.stack_id}): ${preview}`);
+    log?.info(`Message from ${payload.userId ?? "unknown"} (stack: ${payload.stackId}): ${preview}`);
 
     // ACK immediately
     respondJson(res, 202, { ok: true });
 
+    // Resolve the callback URL: per-request overrides account default.
+    const effectiveCallbackUrl = payload.callbackUrl || account.callbackUrl;
+
     // Deliver to agent asynchronously.
     // The dispatcher's deliver callback (in channel.ts) handles sending responses
     // back to MagicForm via sendCallback. This handler only needs to handle errors.
-    const sessionKey = `magicform:${payload.stack_id}:${payload.conversation_id}`;
-    const toField = payload.user_id
-      ? `${payload.stack_id}:${payload.conversation_id}:${payload.user_id}`
-      : `${payload.stack_id}:${payload.conversation_id}`;
+    const sessionKey = `magicform:${payload.stackId}:${payload.conversationId}`;
+    const toField = payload.userId
+      ? `${payload.stackId}:${payload.conversationId}:${payload.userId}`
+      : `${payload.stackId}:${payload.conversationId}`;
 
     try {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -220,16 +222,16 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
           deliver({
             body: cleanMessage,
             from: toField,
-            senderName: payload.user_name ?? payload.user_id ?? "unknown",
+            senderName: payload.userId ?? "unknown",
             provider: "magicform",
             chatType: "direct",
             sessionKey,
             accountId: account.accountId,
             workspaceOverride: payload.workspace,
-            configDirOverride: payload.config_dir,
-            toolsProfileOverride: payload.tools_profile,
-            toolsAllowOverride: payload.tools_allow,
-            toolsDenyOverride: payload.tools_deny,
+            configDirOverride: payload.configDir,
+            toolsAllowOverride: payload.allowedTools,
+            skillFilter: payload.allowedSkills,
+            callbackUrl: effectiveCallbackUrl,
           }),
           timeoutPromise,
         ]);
@@ -238,15 +240,21 @@ export function createWebhookHandler(deps: WebhookHandlerDeps) {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      log?.error(`Failed to process message for ${payload.conversation_id}: ${errMsg}`);
-      await sendCallback(account.backendUrl, account.callbackPath, {
-        stack_id: payload.stack_id,
-        conversation_id: payload.conversation_id,
-        ...(payload.user_id ? { user_id: payload.user_id } : {}),
-        response: "",
+      log?.error(`Failed to process message for ${payload.conversationId}: ${errMsg}`);
+      await sendCallback(effectiveCallbackUrl, {
+        stackId: payload.stackId,
+        conversationId: payload.conversationId,
+        taskId: sessionKey,
+        type: "final",
         status: "error",
+        response: null,
         error: errMsg,
-        metadata: payload.metadata,
+        runtime: "openclaw",
+        durationMs: null,
+        tokenUsage: null,
+        toolCalls: null,
+        progress: null,
+        escalation: null,
       }, account.apiToken);
     }
   };

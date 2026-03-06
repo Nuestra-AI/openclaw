@@ -1,6 +1,6 @@
 /**
  * MagicForm HTTP callback client.
- * Sends agent responses back to MagicForm's POST /claw-agent/callback endpoint.
+ * Sends agent responses back to MagicForm's callback endpoint.
  */
 
 import * as http from "node:http";
@@ -10,19 +10,16 @@ import type { MagicFormCallbackPayload } from "./types.js";
 /**
  * Send an agent response back to MagicForm via the callback endpoint.
  *
- * @param backendUrl - MagicForm backend base URL (e.g., "https://api.magicform.ai")
- * @param callbackPath - Callback path (e.g., "/claw-agent/callback")
+ * @param callbackUrl - Full callback URL (e.g., "https://api.example.com/claw-agent/callback")
  * @param payload - The callback payload
  * @param apiToken - Bearer token for authentication
  * @returns true if sent successfully
  */
 export async function sendCallback(
-  backendUrl: string,
-  callbackPath: string,
+  callbackUrl: string,
   payload: MagicFormCallbackPayload,
   apiToken: string,
 ): Promise<boolean> {
-  const url = `${backendUrl.replace(/\/$/, "")}${callbackPath}`;
   const body = JSON.stringify(payload);
 
   const maxRetries = 3;
@@ -30,7 +27,7 @@ export async function sendCallback(
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const ok = await doPost(url, body, apiToken);
+      const ok = await doPost(callbackUrl, body, apiToken);
       if (ok) return true;
     } catch {
       // will retry

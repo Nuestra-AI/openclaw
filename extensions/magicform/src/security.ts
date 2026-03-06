@@ -27,7 +27,7 @@ export function validateToken(received: string, expected: string): boolean {
 }
 
 /**
- * Check if a stack ID is in the allow_from list.
+ * Check if a stack ID is in the allowFrom list.
  * Empty allowFrom means allow all.
  */
 export function authorizeStackId(
