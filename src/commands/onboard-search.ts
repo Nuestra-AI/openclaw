@@ -23,17 +23,9 @@ type SearchProviderEntry = {
 
 export const SEARCH_PROVIDER_OPTIONS: readonly SearchProviderEntry[] = [
   {
-    value: "perplexity",
-    label: "Perplexity Search",
-    hint: "Structured results · domain/language/freshness filters",
-    envKeys: ["PERPLEXITY_API_KEY"],
-    placeholder: "pplx-...",
-    signupUrl: "https://www.perplexity.ai/settings/api",
-  },
-  {
     value: "brave",
     label: "Brave Search",
-    hint: "Structured results · region-specific",
+    hint: "Structured results · country/language/time filters",
     envKeys: ["BRAVE_API_KEY"],
     placeholder: "BSA...",
     signupUrl: "https://brave.com/search/api/",
@@ -61,6 +53,14 @@ export const SEARCH_PROVIDER_OPTIONS: readonly SearchProviderEntry[] = [
     envKeys: ["KIMI_API_KEY", "MOONSHOT_API_KEY"],
     placeholder: "sk-...",
     signupUrl: "https://platform.moonshot.cn/",
+  },
+  {
+    value: "perplexity",
+    label: "Perplexity Search",
+    hint: "Structured results · domain/country/language/time filters",
+    envKeys: ["PERPLEXITY_API_KEY"],
+    placeholder: "pplx-...",
+    signupUrl: "https://www.perplexity.ai/settings/api",
   },
 ] as const;
 
@@ -115,7 +115,8 @@ function resolveSearchSecretInput(
   key: string,
   secretInputMode?: SecretInputMode,
 ): SecretInput {
-  if (secretInputMode === "ref") {
+  const useSecretRefMode = secretInputMode === "ref"; // pragma: allowlist secret
+  if (useSecretRefMode) {
     return buildSearchEnvRef(provider);
   }
   return key;
@@ -221,7 +222,7 @@ export async function setupSearch(
     if (detected) {
       return detected.value;
     }
-    return "perplexity";
+    return "brave";
   })();
 
   type PickerValue = SearchProvider | "__skip__";
@@ -254,7 +255,8 @@ export async function setupSearch(
     return preserveDisabledState(config, result);
   }
 
-  if (opts?.secretInputMode === "ref") {
+  const useSecretRefMode = opts?.secretInputMode === "ref"; // pragma: allowlist secret
+  if (useSecretRefMode) {
     if (keyConfigured) {
       return preserveDisabledState(config, applyProviderOnly(config, choice));
     }

@@ -79,6 +79,10 @@ openclaw agent --agent ops --message "Audit" \
   --tools-profile minimal --tools-allow read,memory_search
 ```
 
+## Notes
+
+- When this command triggers `models.json` regeneration, SecretRef-managed provider credentials are persisted as non-secret markers (for example env var names or `secretref-managed`), not resolved secret plaintext.
+
 ## Config Overlay (`--config-dir`)
 
 When `--config-dir` is provided, the agent command loads an `openclaw.json` overlay from that directory and deep-merges it over the base config. This enables per-customer or per-stack configuration for multi-tenant deployments.
